@@ -32,34 +32,12 @@ selected_station = st.selectbox(
     format_func=lambda x: "Choose a station" if x == "" else station_options.get(x, x)
 )
 
-# Function to fetch measures for a selected station
-@st.cache_data(ttl=refresh_seconds)
-def get_measures(station_id):
-    url = f"https://environment.data.gov.uk/flood-monitoring/id/stations/{station_id}/measures"
-    try:
-        response = requests.get(url).json()
-        return response.get("items", [])
-    except Exception as e:
-        st.error(f"Failed to fetch measures: {e}")
-        return []
-
 if selected_station:
-    measures = get_measures(selected_station)
-    measure_options = {measure["notation"]: f"{measure['label']} ({measure['unitName']})" for measure in measures}
-
-    selected_measure = st.selectbox(
-        "Select a Measure", 
-        options=[""] + list(measure_options.keys()), 
-        format_func=lambda x: measure_options.get(x, "Choose a measure")
-    )
-
     # Function to fetch readings for the last 24 hours
     @st.cache_data(ttl=refresh_seconds)
-    def get_readings(measure_id):
+    def get_readings(station_id):
         since = (datetime.now() - timedelta(days=1)).isoformat() + 'Z'
-        print(measure_id)
-        print(since)
-        url = f"https://environment.data.gov.uk/flood-monitoring/id/measures/{measure_id}/readings?_sorted&since={since}"
+        url = f"https://environment.data.gov.uk/flood-monitoring/id/stations/{station_id}/readings?_sorted&since={since}"
         try:
             response = requests.get(url).json()
             readings = response.get("items", [])
@@ -68,75 +46,73 @@ if selected_station:
             st.error(f"Failed to fetch readings: {e}")
             return []
 
-    if selected_measure:
-        readings_data = get_readings(selected_measure)
-        
-        if readings_data:
-            df = pd.DataFrame(readings_data)
+    readings_data = get_readings(selected_station)
+    
+    if readings_data:
+        df = pd.DataFrame(readings_data)
 
-            # Line chart
-            fig = px.line(df, x="Time (yyyy-MM-dd HH:mm:ss)", y="Reading", title="Readings Over the Last 24 Hours", markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+        # Line chart
+        fig = px.line(df, x="Time (yyyy-MM-dd HH:mm:ss)", y="Reading", title="Readings Over the Last 24 Hours", markers=True)
+        st.plotly_chart(fig, use_container_width=True)
 
-            # Table
-            st.dataframe(df, use_container_width=True)
+        # Table
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.warning("No readings available for the selected station.")
+
+    if stations and selected_station:
+        st.subheader(f"📍 Location of {station_options[selected_station]}")
+
+        station_map_data = pd.DataFrame([
+            {"lat": s["lat"], "lon": s["long"], "label": s["label"], "notation": s["notation"]}
+            for s in stations if "lat" in s and "long" in s
+        ])
+
+        selected_station_data = station_map_data[station_map_data["notation"] == selected_station]
+
+        if not selected_station_data.empty:
+            default_lat, default_lon = selected_station_data.iloc[0]["lat"], selected_station_data.iloc[0]["lon"]
         else:
-            st.warning("No readings available for the selected measure.")
+            default_lat, default_lon = station_map_data["lat"].mean(), station_map_data["lon"].mean()
 
+        selected_station_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=selected_station_data,
+            get_position="[lon, lat]",
+            get_color="[255, 0, 0, 200]", 
+            get_radius=3000,
+            pickable=True,
+            tooltip=True
+        )
 
-        if stations and selected_station:
-            st.subheader(f"📍 Location of {station_options[selected_station]}")
+        other_stations_data = station_map_data[station_map_data["notation"] != selected_station]
+        other_stations_layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=other_stations_data,
+            get_position="[lon, lat]",
+            get_color="[0, 0, 255, 100]",
+            get_radius=1000,
+            pickable=False
+        )
 
-            station_map_data = pd.DataFrame([
-                {"lat": s["lat"], "lon": s["long"], "label": s["label"], "notation": s["notation"]}
-                for s in stations if "lat" in s and "long" in s
-            ])
+        st.pydeck_chart(pdk.Deck(
+            map_style="mapbox://styles/mapbox/outdoors-v11", 
+            initial_view_state=pdk.ViewState(
+                latitude=default_lat,
+                longitude=default_lon,
+                zoom=8, 
+                pitch=50
+            ),
+            layers=[other_stations_layer, selected_station_layer],
+        ))
 
-            selected_station_data = station_map_data[station_map_data["notation"] == selected_station]
+        st.write(f"📌 Highlighted in **Red**: {station_options[selected_station]}. The blue markers respresent the other flood stations.")
 
-            if not selected_station_data.empty:
-                default_lat, default_lon = selected_station_data.iloc[0]["lat"], selected_station_data.iloc[0]["lon"]
-            else:
-                default_lat, default_lon = station_map_data["lat"].mean(), station_map_data["lon"].mean()
+        st.write(f"🔄 Auto-refreshing dashboard in {refresh_rate} minutes:")
+        progress_bar = st.progress(0)
 
-            selected_station_layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=selected_station_data,
-                get_position="[lon, lat]",
-                get_color="[255, 0, 0, 200]", 
-                get_radius=3000,
-                pickable=True,
-                tooltip=True
-            )
+        for i in range(refresh_seconds):
+            time.sleep(1)
+            progress_bar.progress((i + 1) / refresh_seconds)
 
-            other_stations_data = station_map_data[station_map_data["notation"] != selected_station]
-            other_stations_layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=other_stations_data,
-                get_position="[lon, lat]",
-                get_color="[0, 0, 255, 100]",
-                get_radius=1000,
-                pickable=False
-            )
-
-            st.pydeck_chart(pdk.Deck(
-                map_style="mapbox://styles/mapbox/outdoors-v11", 
-                initial_view_state=pdk.ViewState(
-                    latitude=default_lat,
-                    longitude=default_lon,
-                    zoom=8, 
-                    pitch=50
-                ),
-                layers=[other_stations_layer, selected_station_layer],
-            ))
-
-            st.write(f"📌 Highlighted in **Red**: {station_options[selected_station]}. The blue markers respresent the other flood stations.")
-
-            st.write(f"🔄 Auto-refreshing dashboard in {refresh_rate} minutes:")
-            progress_bar = st.progress(0)
-
-            for i in range(refresh_seconds):
-                time.sleep(1)
-                progress_bar.progress((i + 1) / refresh_seconds)
-
-            st.rerun()
+        st.rerun()
